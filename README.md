@@ -1,4 +1,4 @@
-# RTK Request Studio
+# RTK SnopeR
 
 Client HTTP de bureau (Tkinter + **PycURL**) pour rejouer, à partir d'une
 bibliothèque de **templates d'attaque JSON externalisée**, les sondes de
